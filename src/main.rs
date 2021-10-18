@@ -102,6 +102,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     _ => (),
                 },
 
+                glutin::event::WindowEvent::KeyboardInput { input, .. } => match input {
+                    glutin::event::KeyboardInput { virtual_keycode, .. } =>  match virtual_keycode {
+                        Some(k) => match k {
+                            glutin::event::VirtualKeyCode::Up => triangle.accelerate(0.1),
+                            glutin::event::VirtualKeyCode::Down => triangle.accelerate(-0.1),
+                            _ => ()
+                        },
+                        _ => ()
+                    },
+                    _ => (),
+                },
+
                 _ => (),
             },
 
