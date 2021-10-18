@@ -1,162 +1,137 @@
-// WARNING: I made no attempt to organize my code nor make it readable.
-
 #[macro_use]
 extern crate glium;
+
+mod physics;
+mod shaders;
+
 use glium::{glutin, Surface};
-use glutin::event::{
-    ElementState,
-    Event::{WindowEvent, NewEvents},
-    MouseScrollDelta,
-    StartCause,
-    WindowEvent::{CloseRequested, MouseWheel},
-};
-use std::time::{Duration, Instant};
+use physics::AngularKinematics;
+use std::cell;
+
+// 60 frames per second.
+const NS_PER_60_FRAMES: u64 = 16_666_667;
+const FRAMES_PER_SECOND: u8 = 60;
+const ACCELERATION_CONSTANT: f32 = 0.1; 
+const MAX_ANGULAR_VELOCITY: f32 = 24_f32 * std::f32::consts::PI;
 
 #[derive(Copy, Clone)]
 struct Vertex {
-    position: [f32; 2],
-    color: [f32; 4]
+    coords: [f32; 2],
+    rgba: [f32; 4],
 }
 
-implement_vertex!(Vertex, position, color);
+implement_vertex!(Vertex, coords, rgba);
+
+struct Triangle {
+    vertices: [Vertex; 3],
+    angle: cell::Cell<f32>, // rads
+    angular_velocity: cell::Cell<f32>,
+}
+
+impl Default for Triangle {
+    fn default() -> Self {
+        let angle = cell::Cell::new(0.0);
+        let angular_velocity = cell::Cell::new(0.0);
+        let vertices = [
+            Vertex { coords: [-0.5, -0.5], rgba: [0.0, 1.0, 0.0, 1.0] },
+            Vertex { coords: [0.5, -0.5], rgba: [0.0, 1.0, 0.0, 1.0] },
+            Vertex { coords: [0.0, 0.5], rgba: [0.0, 1.0, 0.0, 1.0] }
+        ];
+
+        Self { vertices, angle, angular_velocity }
+    }
+}
+
+impl AngularKinematics for Triangle {
+    fn accelerate(&self, mouse_wheel_line_delta: f32) {
+        let angular_velocity_i = self.angular_velocity.get();
+
+        // TODO: Smooth step with max/min angular velocity.
+        if mouse_wheel_line_delta > 0.0 {
+            self.angular_velocity.replace(angular_velocity_i + ACCELERATION_CONSTANT)
+        } else {
+            self.angular_velocity.replace(angular_velocity_i - ACCELERATION_CONSTANT)
+        };
+    }
+
+    fn rotate(&self) -> f32 {
+        let angular_velocity = self.angular_velocity.get();
+        let angle_d = angular_velocity * (1.0 / FRAMES_PER_SECOND as f32);
+        let angle_i = self.angle.get();
+        let angle_f = (angle_i + angle_d) % (2.0 * std::f32::consts::PI);
+
+        self.angle.replace(angle_f);
+
+        self.angle.get()
+    }
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut event_loop = glutin::event_loop::EventLoop::new();
+    let event_loop = glutin::event_loop::EventLoop::new();
     let wb = glutin::window::WindowBuilder::new();
     let cb = glutin::ContextBuilder::new();
-    let display = glium::Display::new(wb, cb, &event_loop)?;
+    let display = glium::Display::new(wb, cb, &event_loop).unwrap();
 
-    let triangle = vec![
-        Vertex { position: [-0.5, -0.5], color: [0.0, 1.0, 0.0, 1.0] },
-        Vertex { position: [0.5, -0.5], color: [1.0, 0.0, 0.0, 1.0] },
-        Vertex { position: [0.0, 0.5], color: [0.0, 0.0, 1.0, 1.0] }
-    ];
+    let triangle = Triangle::default();
 
-    let vertex_buffer = glium::VertexBuffer::new(&display, &triangle)?;
+    let vertex_buffer = glium::VertexBuffer::new(&display, &triangle.vertices)?;
     let indices = glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList);
-
-    let vertex_shader_src_glsl = r#"
-    # version 140
-
-    vec2 rotate(vec2 v, float a) {
-        float s = sin(a);
-        float c = cos(a);
-        mat2 m = mat2(
-            c, -s,
-            s, c
-        );
-
-        return m * v;
-    }
-
-    uniform float vtf;
-    in vec2 position;
-    in vec4 color;
-    out vec4 fragColor;
-
-    void main() {
-        gl_Position = vec4(rotate(position, vtf), 0.0, 1.0);
-        fragColor = color;
-    }
-    "#;
-
-    let fragment_shader_src_glsl = r#"
-    # version 140
-
-    uniform float ftf;
-
-    in vec4 fragColor;
-    out vec4 FragColor; 
-    
-    void main() {
-        FragColor = fragColor;
-
-        if (FragColor.x > 0) {
-            FragColor.x = ftf;
-        } else {
-            if (FragColor.y > 0) {
-                FragColor.y = ftf;
-            } else {
-                FragColor.z = ftf;
-            }
-        }
-    }
-    "#;
 
     let program = glium::Program::from_source(
         &display,
-        vertex_shader_src_glsl,
-        fragment_shader_src_glsl,
+        shaders::VERTEX_SHADER_SRC_GLSL,
+        shaders::FRAGMENT_SHADER_SRC_GLSL,
         None
     )?;
 
-    let mut inc: f32 = 0.0;
-    let mut frag_transform = move || -> f32 {
-        let val = inc.sin().abs();
-        inc = (inc + 0.05) % (2_f32 * std::f32::consts::PI);
-        val
-    };
-
-    let mut angle: f32 = 0.0;
-    let mut vtx_transform = move |ldy: f32| -> f32 {
-        if ldy == 0.0 { return angle }
-
-        let val = angle % (2_f32 * std::f32::consts::PI);
-        let inc = if ldy > 0_f32 { 0.1 } else { -0.1 };
-        angle = (angle + inc) % (2_f32 * std::f32::consts::PI);
-
-        val
-    };
-
     event_loop.run(move |ev, _, control_flow| {
-        let mut ldy = 0.0;
+        // 60 frames per second.
+        let frame_rate = std::time::Instant::now() + std::time::Duration::from_nanos(NS_PER_60_FRAMES);
+
+        *control_flow = glutin::event_loop::ControlFlow::WaitUntil(frame_rate);
 
         match ev {
-            WindowEvent { event, .. } => match event {
-                CloseRequested => {
+            glutin::event::Event::WindowEvent { event, .. } => match event {
+                glutin::event::WindowEvent::CloseRequested => {
                     *control_flow = glutin::event_loop::ControlFlow::Exit;
-                    return
+                    return;
+                }
+
+                glutin::event::WindowEvent::MouseWheel { delta, .. } => match delta {
+                    glutin::event::MouseScrollDelta::LineDelta(_, j) => triangle.accelerate(j),
+                    _ => (),
                 },
 
-                MouseWheel { delta, .. } => match delta {
-                    MouseScrollDelta::LineDelta(_, j) => {
-                        ldy = j;
-                    },
-                    _ => ()
-                },
-
-                _ => return
+                _ => (),
             },
 
-            NewEvents(cause) => match cause {
-                StartCause::ResumeTimeReached { .. } => (),
-                StartCause::Init => (),
-                _ => return,
+            glutin::event::Event::NewEvents(cause) => match cause {
+                glutin::event::StartCause::ResumeTimeReached { .. } => (),
+                glutin::event::StartCause::Init => (),
+                _ => return
             },
 
             _ => return,
         }
 
-        let next_frame_time = Instant::now() + Duration::from_nanos(16_666_667);
-        *control_flow = glutin::event_loop::ControlFlow::WaitUntil(next_frame_time);
+        let mut target = display.draw();
 
-        let mut frame = display.draw();
+        target.clear_color(0.0, 0.0, 0.0, 1.0);
 
-        frame.clear_color(0.0, 0.0, 0.0, 1.0);
-
-        let ftf = frag_transform();
-        let vtf = vtx_transform(ldy);
-        println!("Angular orientation: {} rads", vtf);
-
-        frame.draw(
+        target.draw(
             &vertex_buffer,
             &indices,
             &program,
-            &uniform! { ftf: ftf, vtf: vtf },
+            &uniform! { angle: triangle.rotate() },
             &Default::default()
         ).unwrap();
 
-        frame.finish().unwrap();
+        target.finish().unwrap();
+
+        println!("angle: {:.2} rad, velocity: {:.2} rad/s",
+            triangle.angle.get(),
+            triangle.angular_velocity.get()
+        );
     });
 
     Ok(())
