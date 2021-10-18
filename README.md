@@ -1,6 +1,7 @@
 # hello_opengl
-My "Hello World" for OpenGL: A triangle that changes color that you can rotate via mouse/trackpad scrolling.
+My "Hello World" for OpenGL: A triangle that you can apply torque to with your mouse-wheel. Trackpads not yet supported.
+- Scrolling up increases angular velocity.
+- Scrolling down decreases angular velocity.
+The more vigorously you scroll, the faster your triangle will angularly accelerate/decelerate.
 
-WARNING: I made no attempt to organize my code nor make it readable.
-
-https://user-images.githubusercontent.com/45523555/137646627-ae8b2ba8-fbe5-4de3-b0f9-1fdb0eb72b25.mov
+https://user-images.githubusercontent.com/45523555/137687108-f613ada3-d4c2-4f30-a37c-e401dfb6b239.mov
